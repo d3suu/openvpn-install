@@ -3,9 +3,12 @@
 # https://github.com/Nyr/openvpn-install
 #
 # Copyright (c) 2013 Nyr. Released under the MIT License.
+# Copyright for portions of project openvpn-install are held by [Nyr, 2013] as part of project openvpn-install-openbsd.
+# All other copyright for project openvpn-install-openbsd are held by [d3s, 2020].
 
 
 # Detect Debian users running the script with "sh" instead of bash
+# OpenBSD_PORT_README - Leave bash for now, check ksh compatibility later
 if readlink /proc/$$/exe | grep -q "dash"; then
 	echo 'This installer needs to be run with "bash", not "sh".'
 	exit
@@ -38,9 +41,14 @@ elif [[ -e /etc/fedora-release ]]; then
 	os="fedora"
 	os_version=$(grep -oE '[0-9]+' /etc/fedora-release | head -1)
 	group_name="nobody"
+elif grep -qs "OpenBSD" /var/run/dmesg.boot; then
+	os="openbsd"
+	os_version=$(grep -oE '[0-9]+' /var/run/dmesg.boot | head -1)
+	os_version_minor=$(grep -oE '\.[0-9]+' /var/run/dmesg.boot | sed s/\.// | head -1)
+	group_name="nogroup"
 else
 	echo "This installer seems to be running on an unsupported distribution.
-Supported distributions are Ubuntu, Debian, CentOS, and Fedora."
+Supported distributions are Ubuntu, Debian, CentOS, OpenBSD, and Fedora."
 	exit
 fi
 
@@ -62,21 +70,35 @@ This version of CentOS is too old and unsupported."
 	exit
 fi
 
+if [[ "$os" == "openbsd" && "$os_version" -lt 6 && "$os_version_minor" -lt 7 ]]; then
+	echo "OpenBSD 6.7 or higher is required to use this installer.
+This version of OpenBSD is too old and unsupported."
+	exit
+fi
+
 # Detect environments where $PATH does not include the sbin directories
 if ! grep -q sbin <<< "$PATH"; then
 	echo '$PATH does not include sbin. Try using "su -" instead of "su".'
 	exit
 fi
 
-if [[ "$EUID" -ne 0 ]]; then
+if [[ "$EUID" -ne 0 || "$(whoami)" != "root" ]]; then
 	echo "This installer needs to be run with superuser privileges."
 	exit
 fi
 
-if [[ ! -e /dev/net/tun ]] || ! ( exec 7<>/dev/net/tun ) 2>/dev/null; then
-	echo "The system does not have the TUN device available.
+if [[ "$os" != "openbsd" ]]; then
+	if [[ ! -e /dev/net/tun ]] || ! ( exec 7<>/dev/net/tun ) 2>/dev/null; then
+		echo "The system does not have the TUN device available.
 TUN needs to be enabled before running this installer."
-	exit
+		exit
+	fi
+else
+	if [[ ! -e /dev/tun0 ]]; then
+		echo "The system does not have the TUN device available.
+TUN needs to be enabled before running this installer."
+		exit
+	fi
 fi
 
 new_client () {
@@ -102,20 +124,34 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 	clear
 	echo 'Welcome to this OpenVPN road warrior installer!'
 	# If system has a single IPv4, it is selected automatically. Else, ask the user
-	if [[ $(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}') -eq 1 ]]; then
+	if [[ "$os" != "openbsd" && $(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}') -eq 1 ]]; then
 		ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}')
+	elif [[ "$os" == "openbsd" && $(ifconfig | grep inet | sed /inet6/d | grep -vEc '127(\.[0-9]{1,3}){3}') -eq 1 ]]; then
+		ip=$(ifconfig | grep inet | sed /inet6/d | grep -vE '127(\.[0-9]{1,3}){3}' | sed 's/ netmask.*//' | sed 's/.*inet //')
 	else
-		number_of_ip=$(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}')
+		if [[ "$os" != "openbsd" ]]; then
+			number_of_ip=$(ip -4 addr | grep inet | grep -vEc '127(\.[0-9]{1,3}){3}')
+		else
+			number_of_ip=$(ifconfig | grep inet | sed /inet6/d | grep -vEc '127(\.[0-9]{1,3}){3}')
+		fi
 		echo
 		echo "Which IPv4 address should be used?"
-		ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | nl -s ') '
+		if [[ "$os" != "openbsd" ]]; then
+			ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | nl -s ') '
+		else
+			ifconfig | grep inet | sed /inet6/d | grep -vE '127(\.[0-9]{1,3}){3}' | sed 's/ netmask.*//' | sed 's/.*inet //' | nl -s ') '
+		fi
 		read -p "IPv4 address [1]: " ip_number
 		until [[ -z "$ip_number" || "$ip_number" =~ ^[0-9]+$ && "$ip_number" -le "$number_of_ip" ]]; do
 			echo "$ip_number: invalid selection."
 			read -p "IPv4 address [1]: " ip_number
 		done
 		[[ -z "$ip_number" ]] && ip_number="1"
-		ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | sed -n "$ip_number"p)
+		if [[ "$os" != "openbsd" ]]; then
+			ip=$(ip -4 addr | grep inet | grep -vE '127(\.[0-9]{1,3}){3}' | cut -d '/' -f 1 | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | sed -n "$ip_number"p)
+		else
+			ip=$(ifconfig | grep inet | sed /inet6/d | grep -vE '127(\.[0-9]{1,3}){3}' | sed 's/ netmask.*//' | sed 's/.*inet //' | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | sed -n "$ip_number"p)
+		fi
 	fi
 	# If $ip is a private IP address, the server must be behind NAT
 	if echo "$ip" | grep -qE '^(10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|192\.168)'; then
@@ -132,6 +168,8 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 		[[ -z "$public_ip" ]] && public_ip="$get_public_ip"
 	fi
 	# If system has a single IPv6, it is selected automatically
+	# OpenBSD_PORT - Disable IPv6 for now
+	if [[ "0" == "1" ]]; then
 	if [[ $(ip -6 addr | grep -c 'inet6 [23]') -eq 1 ]]; then
 		ip6=$(ip -6 addr | grep 'inet6 [23]' | cut -d '/' -f 1 | grep -oE '([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}')
 	fi
@@ -149,6 +187,10 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 		[[ -z "$ip6_number" ]] && ip6_number="1"
 		ip6=$(ip -6 addr | grep 'inet6 [23]' | cut -d '/' -f 1 | grep -oE '([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}' | sed -n "$ip6_number"p)
 	fi
+	# OpenBSD_PORT - Disable IPv6 for now
+	fi
+	ip6="::1"
+	
 	echo
 	echo "Which protocol should OpenVPN use?"
 	echo "   1) UDP (recommended)"
@@ -205,6 +247,9 @@ if [[ ! -e /etc/openvpn/server/server.conf ]]; then
 		elif [[ "$os" == "debian" || "$os" == "ubuntu" ]]; then
 			# iptables is way less invasive than firewalld so no warning is given
 			firewall="iptables"
+		elif [[ "$os" == "openbsd" ]]; then
+			firewall="pf"
+			# OpenBSD_PORT - This will probably need some work
 		fi
 	fi
 	read -n1 -r -p "Press any key to continue..."
@@ -220,14 +265,20 @@ LimitNPROC=infinity" > /etc/systemd/system/openvpn-server@server.service.d/disab
 	elif [[ "$os" = "centos" ]]; then
 		yum install -y epel-release
 		yum install -y openvpn openssl ca-certificates tar $firewall
-	else
+	elif [[ "$os" == "fedora" ]]; then
 		# Else, OS must be Fedora
 		dnf install -y openvpn openssl ca-certificates tar $firewall
+	elif [[ "$os" == "openbsd" ]]; then
+		# OpenBSD_PORT - Check me, ca-certificates are installed ootb?
+		pkg_add openvpn openssl easy-rsa
 	fi
 	# If firewalld was just installed, enable it
 	if [[ "$firewall" == "firewalld" ]]; then
 		systemctl enable --now firewalld.service
 	fi
+	
+	# Build server
+	if [[ "$os" != "openbsd" ]]; then
 	# Get easy-rsa
 	easy_rsa_url='https://github.com/OpenVPN/easy-rsa/releases/download/v3.0.8/EasyRSA-3.0.8.tgz'
 	mkdir -p /etc/openvpn/server/easy-rsa/
@@ -557,4 +608,8 @@ else
 			exit
 		;;
 	esac
+	else
+		# OpenBSD_PORT - here make all of this stuff, but on OpenBSD
+		
+	fi
 fi

@@ -704,5 +704,19 @@ crl-verify crl.pem" >> /etc/openvpn/server/server.conf
 		sysctl net.inet.ip.forwarding=1
 		# Firewall
 		# OpenBSD_PORT - line 339 at https://github.com/Nyr/openvpn-install/blob/master/openvpn-install.sh
+		# From https://www.rohlix.eu/post/openbsd-openvpn-server/
+		# OpenBSD_PORT - Need interface name for pf config, static em0 and tun0 for now
+		echo "pass in on em0 proto tcp from any to em0 port {$port}
+pass in quick on tun0 # allows IP-based client-to-client communication
+pass out on em0 from 10.8.0.0/24 to any nat-to (em0)" >> /etc/pf.conf
+		pfctl -f /etc/pf.conf
+		# Build tun interface
+		echo "up
+!/usr/local/sbin/openvpn --daemon \
+                         --config /etc/openvpn/server.conf \
+                         --dev tun0 \
+                         & false" >> /etc/hostname.tun0
+		sh /etc/netstart tun0
+		
 	fi
 fi
